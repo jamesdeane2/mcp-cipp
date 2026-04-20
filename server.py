@@ -1,12 +1,13 @@
 """
 mcp-cipp: FastMCP server for the CIPP API
 Wraps the CIPP REST API (CyberDrain Improved Partner Portal) for M365 multi-tenant management.
+
+Auth: OAuth2 client credentials flow using the CIPP API client credentials.
 """
 
 import os
 import httpx
 from datetime import datetime, timedelta
-from typing import Optional
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -14,60 +15,55 @@ load_dotenv()
 
 mcp = FastMCP("mcp-cipp", description="CIPP API server for M365 multi-tenant management")
 
-# --- Auth ---
+# --- Config ---
 
 CIPP_API_URL = os.getenv("CIPP_API_URL", "").rstrip("/")
 TENANT_ID = os.getenv("CIPP_TENANT_ID", "")
 CLIENT_ID = os.getenv("CIPP_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CIPP_CLIENT_SECRET", "")
+SCOPE = f"api://{CLIENT_ID}/.default"
 
 _token_cache: dict = {"token": None, "expires_at": None}
 
 
 async def get_token() -> str:
-    """Get a cached bearer token, refreshing if needed."""
+    """Get a cached bearer token, refreshing via client credentials if needed."""
     now = datetime.utcnow()
     if _token_cache["token"] and _token_cache["expires_at"] and now < _token_cache["expires_at"]:
         return _token_cache["token"]
 
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "scope": f"api://{CLIENT_ID}/.default",
-        "grant_type": "client_credentials",
-    }
-
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, data=data)
+        resp = await client.post(
+            f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "scope": SCOPE,
+                "grant_type": "client_credentials",
+            }
+        )
         resp.raise_for_status()
-        result = resp.json()
+        data = resp.json()
 
-    token = result["access_token"]
-    expires_in = result.get("expires_in", 3600)
-    _token_cache["token"] = token
-    _token_cache["expires_at"] = now + timedelta(seconds=expires_in - 60)
-    return token
+    _token_cache["token"] = data["access_token"]
+    _token_cache["expires_at"] = now + timedelta(seconds=data.get("expires_in", 3600) - 60)
+    return _token_cache["token"]
 
 
-async def cipp_get(path: str, params: Optional[dict] = None) -> dict:
-    """Make an authenticated GET request to the CIPP API."""
+async def cipp_get(path: str, params: dict = None) -> dict:
     token = await get_token()
     url = f"{CIPP_API_URL}/{path.lstrip('/')}"
-    headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(url, headers=headers, params=params)
+        resp = await client.get(url, headers={"Authorization": f"Bearer {token}"}, params=params)
         resp.raise_for_status()
         return resp.json()
 
 
 async def cipp_post(path: str, body: dict) -> dict:
-    """Make an authenticated POST request to the CIPP API."""
     token = await get_token()
     url = f"{CIPP_API_URL}/{path.lstrip('/')}"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(url, headers=headers, json=body)
+        resp = await client.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=body)
         resp.raise_for_status()
         return resp.json()
 
@@ -189,7 +185,13 @@ async def add_user(
 
 
 @mcp.tool()
-async def offboard_user(tenant_filter: str, user_id: str, revoke_sessions: bool = True, disable_user: bool = True, remove_licenses: bool = True) -> dict:
+async def offboard_user(
+    tenant_filter: str,
+    user_id: str,
+    revoke_sessions: bool = True,
+    disable_user: bool = True,
+    remove_licenses: bool = True,
+) -> dict:
     """Offboard a user from a tenant.
 
     Args:
@@ -225,14 +227,13 @@ async def reset_user_password(tenant_filter: str, user_id: str, must_change_pass
 
 
 @mcp.tool()
-async def set_mfa_methods(tenant_filter: str, user_id: str) -> dict:
-    """Get MFA registration details for a user.
+async def list_mfa_users(tenant_filter: str) -> dict:
+    """Get MFA registration status for all users in a tenant.
 
     Args:
         tenant_filter: Tenant domain or ID
-        user_id: User UPN or object ID
     """
-    return await cipp_get("/api/ListMFAUsers", params={"tenantFilter": tenant_filter, "userId": user_id})
+    return await cipp_get("/api/ListMFAUsers", params={"tenantFilter": tenant_filter})
 
 
 # --- Group Tools ---
@@ -365,7 +366,7 @@ async def list_licenses(tenant_filter: str) -> dict:
     return await cipp_get("/api/ListLicenses", params={"tenantFilter": tenant_filter})
 
 
-# --- Domain ---
+# --- Domains ---
 
 @mcp.tool()
 async def list_domains(tenant_filter: str) -> dict:
