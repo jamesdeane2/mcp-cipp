@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 
 load_dotenv()
 
-mcp = FastMCP("mcp-cipp", description="CIPP API server for M365 multi-tenant management")
+mcp = FastMCP("mcp-cipp")
 
 # --- Config ---
 
@@ -56,7 +56,8 @@ async def cipp_get(path: str, params: dict = None) -> dict:
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.get(url, headers={"Authorization": f"Bearer {token}"}, params=params)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return {"results": data} if isinstance(data, list) else data
 
 
 async def cipp_post(path: str, body: dict) -> dict:
@@ -65,7 +66,8 @@ async def cipp_post(path: str, body: dict) -> dict:
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=body)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return {"results": data} if isinstance(data, list) else data
 
 
 # --- Tenant Tools ---
